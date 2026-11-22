@@ -1,0 +1,60 @@
+name: Build Velora APK
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Unzip source
+        run: |
+          mkdir -p work
+          ZIP=$(find . -maxdepth 1 -iname '*.zip' | head -n1)
+          echo "Using zip: $ZIP"
+          unzip -q "$ZIP" -d work
+          P=$(find work -maxdepth 5 -name package.json -not -path '*/node_modules/*' | head -n1)
+          [ -n "$P" ] || { echo "package.json not found"; find work | head -50; exit 1; }
+          echo "PROJ=$PWD/$(dirname "$P")" >> $GITHUB_ENV
+      - name: Install dependencies
+        run: |
+          cd "$PROJ"
+          npm install --no-audit --no-fund
+          python3 -m pip install --quiet pillow
+      - name: Quick checks
+        run: |
+          cd "$PROJ"
+          for f in public/js/*.js; do cp "$f" /tmp/check.mjs && node --check /tmp/check.mjs || exit 1; done
+          python3 tests/manifest_test.py
+      - name: Create Android project
+        run: |
+          cd "$PROJ"
+          rm -rf android
+          npx cap add android
+      - name: Turn it into Velora (intents, plugin, icons, signing)
+        run: |
+          cd "$PROJ"
+          python3 scripts/patch_android.py
+          npx cap sync android
+          grep -q "velora-patched" android/app/src/main/AndroidManifest.xml
+      - name: Build APK
+        run: |
+          cd "$PROJ/android"
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+      - name: Collect APK
+        run: cp "$PROJ"/android/app/build/outputs/apk/release/*.apk Velora.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: velora-${{ github.run_number }}
+          name: Velora 1.1 (build ${{ github.run_number }})
+          files: Velora.apk
